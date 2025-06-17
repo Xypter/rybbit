@@ -6,12 +6,14 @@ services:
     ports:
       - "8088:8088"
       - "7443:7443"
-      - "7443:7443/udp"
+      - "7443:7443/udp" # Needed for HTTP/3
     volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile
-      - caddy_data:/data
-      - caddy_config:/config
+      - ./Caddyfile:/etc/caddy/Caddyfile # Mount Caddy config file
+      - caddy_data:/data # Mount persistent data volume for certs etc.
+      - caddy_config:/config # Mount persistent config volume
     environment:
+      # Pass domain name for use in Caddyfile
+      # Email is configured via Caddyfile global options
       - DOMAIN_NAME=${DOMAIN_NAME}
     depends_on:
       - backend
@@ -31,7 +33,15 @@ services:
       - CLICKHOUSE_USER=${CLICKHOUSE_USER:-default}
       - CLICKHOUSE_PASSWORD=${CLICKHOUSE_PASSWORD:-frog}
     healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8123/ping"]
+      test:
+        [
+          "CMD",
+          "wget",
+          "--no-verbose",
+          "--tries=1",
+          "--spider",
+          "http://localhost:8123/ping",
+        ]
       interval: 3s
       timeout: 5s
       retries: 5
@@ -108,30 +118,8 @@ services:
       - backend
     restart: unless-stopped
 
-  payload:
-    container_name: payload
-    build:
-      context: ./payload
-    ports:
-      - "3000:3000"
-    environment:
-      - PAYLOAD_SECRET=${PAYLOAD_SECRET}
-      - MONGODB_URI=mongodb://mongo:27017/payload # Or use PostgreSQL with custom adapter
-      - PAYLOAD_PUBLIC_SERVER_URL=${PAYLOAD_PUBLIC_SERVER_URL}
-    depends_on:
-      - postgres # Optional depending on DB used
-    restart: unless-stopped
-
-  mongo:
-    image: mongo:7.0
-    container_name: mongo
-    volumes:
-      - mongo-data:/data/db
-    restart: unless-stopped
-
 volumes:
   clickhouse-data:
   postgres-data:
-  caddy_data:
-  caddy_config:
-  mongo-data:
+  caddy_data: # Persistent volume for Caddy's certificates and state
+  caddy_config: # Persistent volume for Caddy's configuration cache (optional but good practice)
