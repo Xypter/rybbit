@@ -51,8 +51,9 @@ services:
     build:
       context: .
       dockerfile: server/Dockerfile
-    ports:
-      - "${HOST_BACKEND_PORT:-3001}:3001"
+    # ports handled by Coolify
+    expose:
+      - "3001"
     environment:
       - NODE_ENV=production
       - CLICKHOUSE_HOST=http://clickhouse:8123
@@ -88,8 +89,9 @@ services:
       args:
         NEXT_PUBLIC_BACKEND_URL: ${BASE_URL}
         NEXT_PUBLIC_DISABLE_SIGNUP: ${DISABLE_SIGNUP}
-    ports:
-      - "${HOST_CLIENT_PORT:-3000}:3000"
+    # ports handled by Coolify
+    expose:
+      - "3000"
     environment:
       - NODE_ENV=production
       - NEXT_PUBLIC_BACKEND_URL=${BASE_URL}
