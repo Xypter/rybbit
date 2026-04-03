@@ -1,0 +1,167 @@
+services:
+  clickhouse:
+    container_name: rybbit-clickhouse
+    image: clickhouse/clickhouse-server:25.4.2
+    volumes:
+      - clickhouse-data:/var/lib/clickhouse
+    configs:
+      - source: clickhouse_network
+        target: /etc/clickhouse-server/config.d/network.xml
+      - source: clickhouse_json
+        target: /etc/clickhouse-server/config.d/enable_json.xml
+      - source: clickhouse_logging
+        target: /etc/clickhouse-server/config.d/logging_rules.xml
+      - source: clickhouse_user_logging
+        target: /etc/clickhouse-server/config.d/user_logging.xml
+    environment:
+      - CLICKHOUSE_DB=${CLICKHOUSE_DB:-analytics}
+      - CLICKHOUSE_USER=${CLICKHOUSE_USER:-default}
+      - CLICKHOUSE_PASSWORD=${CLICKHOUSE_PASSWORD}
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8123/ping"]
+      interval: 3s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+    networks:
+      - rybbit
+
+  postgres:
+    image: postgres:17.4
+    container_name: rybbit-postgres
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_DB=${POSTGRES_DB:-analytics}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 3s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+    networks:
+      - rybbit
+
+  backend:
+    image: ghcr.io/rybbit-io/rybbit-backend:${IMAGE_TAG:-latest}
+    container_name: rybbit-backend
+    environment:
+      - NODE_ENV=production
+      - CLICKHOUSE_HOST=http://rybbit-clickhouse:8123
+      - CLICKHOUSE_DB=${CLICKHOUSE_DB:-analytics}
+      - CLICKHOUSE_PASSWORD=${CLICKHOUSE_PASSWORD}
+      - POSTGRES_HOST=rybbit-postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=${POSTGRES_DB:-analytics}
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - BETTER_AUTH_SECRET=${BETTER_AUTH_SECRET}
+      - BASE_URL=${BASE_URL}
+      - DISABLE_SIGNUP=${DISABLE_SIGNUP:-false}
+      - DISABLE_TELEMETRY=true
+      - MAPBOX_TOKEN=${MAPBOX_TOKEN}
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+      postgres:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:3001/api/health"]
+      interval: 3s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+    networks:
+      - rybbit
+      - coolify
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.rybbit-backend.rule=Host(`analytics.sgxp.me`) && PathPrefix(`/api`)"
+      - "traefik.http.routers.rybbit-backend.entrypoints=https"
+      - "traefik.http.routers.rybbit-backend.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.rybbit-backend.priority=20"
+      - "traefik.http.services.rybbit-backend.loadbalancer.server.port=3001"
+
+  client:
+    build:
+      context: .
+      dockerfile: client/Dockerfile
+      args:
+        NEXT_PUBLIC_BACKEND_URL: ${BASE_URL}
+        NEXT_PUBLIC_DISABLE_SIGNUP: ${DISABLE_SIGNUP:-false}
+    container_name: rybbit-client
+    environment:
+      - NODE_ENV=production
+      - NEXT_PUBLIC_BACKEND_URL=${BASE_URL}
+      - NEXT_PUBLIC_DISABLE_SIGNUP=${DISABLE_SIGNUP:-false}
+    depends_on:
+      - backend
+    restart: unless-stopped
+    networks:
+      - rybbit
+      - coolify
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.rybbit-client.rule=Host(`analytics.sgxp.me`)"
+      - "traefik.http.routers.rybbit-client.entrypoints=https"
+      - "traefik.http.routers.rybbit-client.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.rybbit-client.priority=10"
+      - "traefik.http.services.rybbit-client.loadbalancer.server.port=3002"
+
+networks:
+  rybbit:
+    driver: bridge
+  coolify:
+    external: true
+
+volumes:
+  clickhouse-data:
+  postgres-data:
+
+configs:
+  clickhouse_network:
+    content: |
+      <clickhouse>
+          <listen_host>0.0.0.0</listen_host>
+      </clickhouse>
+  clickhouse_json:
+    content: |
+      <clickhouse>
+          <settings>
+              <enable_json_type>1</enable_json_type>
+          </settings>
+      </clickhouse>
+  clickhouse_logging:
+    content: |
+      <clickhouse>
+        <logger>
+            <level>warning</level>
+            <console>true</console>
+        </logger>
+        <query_thread_log remove="remove"/>
+        <query_log remove="remove"/>
+        <text_log remove="remove"/>
+        <trace_log remove="remove"/>
+        <metric_log remove="remove"/>
+        <asynchronous_metric_log remove="remove"/>
+        <session_log remove="remove"/>
+        <part_log remove="remove"/>
+        <latency_log remove="remove"/>
+        <processors_profile_log remove="remove"/>
+      </clickhouse>
+  clickhouse_user_logging:
+    content: |
+      <clickhouse>
+        <profiles>
+          <default>
+            <log_queries>0</log_queries>
+            <log_query_threads>0</log_query_threads>
+            <log_processors_profiles>0</log_processors_profiles>
+          </default>
+        </profiles>
+      </clickhouse>
