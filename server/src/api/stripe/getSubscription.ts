@@ -1,24 +1,20 @@
-import { eq } from "drizzle-orm";
+import { eq, and } from "drizzle-orm";
 import { FastifyReply, FastifyRequest } from "fastify";
+import { DateTime } from "luxon";
 import Stripe from "stripe";
 import { db } from "../../db/postgres/postgres.js";
-import { organization } from "../../db/postgres/schema.js";
+import { organization, member } from "../../db/postgres/schema.js";
 import {
-  DEFAULT_EVENT_LIMIT,
-  getStripePrices,
-  StripePlan,
+  APPSUMO_MEMBER_LIMITS,
+  APPSUMO_SITE_LIMITS,
+  BASIC_MEMBER_LIMIT,
+  BASIC_SITE_LIMIT,
+  FREE_MEMBER_LIMIT,
+  FREE_SITE_LIMIT,
+  STANDARD_MEMBER_LIMIT,
+  STANDARD_SITE_LIMIT,
 } from "../../lib/const.js";
-import { stripe } from "../../lib/stripe.js";
-import { DateTime } from "luxon";
-
-// Function to find plan details by price ID
-function findPlanDetails(priceId: string): StripePlan | undefined {
-  return getStripePrices().find(
-    (plan: StripePlan) =>
-      plan.priceId === priceId ||
-      (plan.annualDiscountPriceId && plan.annualDiscountPriceId === priceId)
-  );
-}
+import { getBestSubscription, SubscriptionInfo } from "../../lib/subscriptionUtils.js";
 
 function getStartOfMonth() {
   return DateTime.now().startOf("month").toJSDate();
@@ -28,6 +24,60 @@ function getStartOfNextMonth() {
   return DateTime.now().startOf("month").plus({ months: 1 }).toJSDate();
 }
 
+/**
+ * Computes memberLimit and siteLimit from a subscription.
+ * null = unlimited.
+ */
+function computeLimits(
+  subscription: SubscriptionInfo,
+  stripeCreatedAt?: Date
+): { memberLimit: number | null; siteLimit: number | null } {
+  if (subscription.source === "custom") {
+    return {
+      memberLimit: subscription.memberLimit,
+      siteLimit: subscription.siteLimit,
+    };
+  }
+
+  const planName = subscription.planName;
+
+  if (planName.includes("pro")) {
+    return { memberLimit: null, siteLimit: null };
+  }
+
+  if (planName.includes("standard")) {
+    // Legacy standard plans created before 2025-06-27 get unlimited sites
+    const siteLimit =
+      stripeCreatedAt && DateTime.fromJSDate(stripeCreatedAt) < DateTime.fromFormat("2025-06-27", "yyyy-MM-dd")
+        ? null
+        : STANDARD_SITE_LIMIT;
+    return { memberLimit: STANDARD_MEMBER_LIMIT, siteLimit };
+  }
+
+  if (planName.includes("basic")) {
+    return { memberLimit: BASIC_MEMBER_LIMIT, siteLimit: BASIC_SITE_LIMIT };
+  }
+
+  // AppSumo tiers (e.g. "appsumo-1" through "appsumo-6")
+  const appsumoMatch = planName.match(/^appsumo-([123456])$/);
+  if (appsumoMatch) {
+    const tier = appsumoMatch[1];
+    return {
+      memberLimit: APPSUMO_MEMBER_LIMITS[tier] ?? null,
+      siteLimit: APPSUMO_SITE_LIMITS[tier] ?? null,
+    };
+  }
+
+  if (subscription.source === "override") {
+    // Override with a known stripe plan name already handled above.
+    // For unknown override plans, default to unlimited.
+    return { memberLimit: null, siteLimit: null };
+  }
+
+  // Free tier
+  return { memberLimit: FREE_MEMBER_LIMIT, siteLimit: FREE_SITE_LIMIT };
+}
+
 export async function getSubscriptionInner(organizationId: string) {
   // 1. Find the organization and their Stripe Customer ID
   const orgResult = await db
@@ -35,6 +85,7 @@ export async function getSubscriptionInner(organizationId: string) {
       stripeCustomerId: organization.stripeCustomerId,
       monthlyEventCount: organization.monthlyEventCount,
       createdAt: organization.createdAt,
+      name: organization.name,
     })
     .from(organization)
     .where(eq(organization.id, organizationId))
@@ -46,78 +97,107 @@ export async function getSubscriptionInner(organizationId: string) {
     return null;
   }
 
-  // Check if organization has an active Stripe subscription
-  if (org.stripeCustomerId) {
-    // 2. List active subscriptions for the customer from Stripe
-    const subscriptions = await (stripe as Stripe).subscriptions.list({
-      customer: org.stripeCustomerId,
-      status: "active", // Only fetch active subscriptions
-      limit: 1, // Organizations should only have one active subscription
-      expand: ["data.plan.product"], // Expand to get product details if needed
-    });
+  // Get the best subscription (highest event limit from AppSumo or Stripe)
+  const subscription = await getBestSubscription(organizationId, org.stripeCustomerId);
 
-    if (subscriptions.data.length > 0) {
-      const subscription = subscriptions.data[0];
-      const subscriptionItem = subscription.items.data[0];
+  // Compute member/site limits
+  const stripeCreatedAt = subscription.source === "stripe" ? subscription.createdAt : undefined;
+  const limits = computeLimits(subscription, stripeCreatedAt);
 
-      const priceId = subscriptionItem.price.id;
-
-      if (!priceId) {
-        throw new Error("Subscription item price ID not found");
-      }
-
-      // 3. Find corresponding plan details from your constants
-      const planDetails = findPlanDetails(priceId);
-
-      if (!planDetails) {
-        console.error("Plan details not found for price ID:", priceId);
-        // Still return the basic subscription info even if local plan details missing
-        return {
-          id: subscription.id,
-          planName: "Unknown Plan", // Indicate missing details
-          status: subscription.status,
-          currentPeriodStart: new Date(
-            subscriptionItem.current_period_start * 1000
-          ),
-          currentPeriodEnd: new Date(
-            subscriptionItem.current_period_end * 1000
-          ),
-          cancelAtPeriodEnd: subscription.cancel_at_period_end,
-          eventLimit: 0, // Unknown limit
-          monthlyEventCount: org.monthlyEventCount || 0,
-          interval: subscriptionItem.price.recurring?.interval ?? "unknown",
-        };
-      }
-
-      // 4. Format and return the subscription data
-      const responseData = {
-        id: subscription.id,
-        planName: planDetails.name,
-        status: subscription.status,
-        currentPeriodStart: new Date(
-          subscriptionItem.current_period_start * 1000
-        ),
-        currentPeriodEnd: new Date(subscriptionItem.current_period_end * 1000),
-        cancelAtPeriodEnd: subscription.cancel_at_period_end,
-        eventLimit: planDetails.limits.events,
-        monthlyEventCount: org.monthlyEventCount || 0,
-        interval: subscriptionItem.price.recurring?.interval ?? "unknown",
-      };
-
-      return responseData;
-    }
+  // Format response based on subscription source
+  if (subscription.source === "custom") {
+    return {
+      id: null,
+      planName: subscription.planName,
+      status: subscription.status,
+      currentPeriodEnd: getStartOfNextMonth(),
+      currentPeriodStart: getStartOfMonth(),
+      eventLimit: subscription.eventLimit,
+      monthlyEventCount: org.monthlyEventCount || 0,
+      interval: subscription.interval,
+      cancelAtPeriodEnd: subscription.cancelAtPeriodEnd,
+      ...limits,
+    };
   }
 
-  // If we get here, the organization has no active paid subscription
+  if (subscription.source === "override") {
+    return {
+      id: null,
+      planName: subscription.planName,
+      status: subscription.status,
+      currentPeriodEnd: getStartOfNextMonth(),
+      currentPeriodStart: getStartOfMonth(),
+      eventLimit: subscription.eventLimit,
+      monthlyEventCount: org.monthlyEventCount || 0,
+      interval: subscription.interval,
+      cancelAtPeriodEnd: subscription.cancelAtPeriodEnd,
+      isOverride: true,
+      ...limits,
+    };
+  }
+
+  if (subscription.source === "appsumo") {
+    return {
+      id: null,
+      planName: subscription.planName,
+      status: subscription.status,
+      currentPeriodEnd: getStartOfNextMonth(),
+      currentPeriodStart: getStartOfMonth(),
+      eventLimit: subscription.eventLimit,
+      monthlyEventCount: org.monthlyEventCount || 0,
+      interval: subscription.interval,
+      cancelAtPeriodEnd: subscription.cancelAtPeriodEnd,
+      ...limits,
+    };
+  }
+
+  if (subscription.source === "stripe") {
+    if (subscription.status === "trialing") {
+      const trialDaysRemaining = subscription.trialEnd
+        ? Math.max(0, Math.ceil(DateTime.fromJSDate(subscription.trialEnd).diff(DateTime.now(), "days").days))
+        : 0;
+      return {
+        id: subscription.subscriptionId,
+        planName: subscription.planName,
+        status: subscription.status,
+        createdAt: subscription.createdAt,
+        currentPeriodStart: DateTime.fromISO(subscription.periodStart).toJSDate(),
+        currentPeriodEnd: subscription.trialEnd ?? subscription.currentPeriodEnd,
+        cancelAtPeriodEnd: subscription.cancelAtPeriodEnd,
+        eventLimit: subscription.eventLimit,
+        monthlyEventCount: org.monthlyEventCount || 0,
+        interval: subscription.interval,
+        isTrial: true,
+        trialDaysRemaining,
+        ...limits,
+      };
+    }
+    return {
+      id: subscription.subscriptionId,
+      planName: subscription.planName,
+      status: subscription.status,
+      createdAt: subscription.createdAt,
+      currentPeriodStart: DateTime.fromISO(subscription.periodStart).toJSDate(),
+      currentPeriodEnd: subscription.currentPeriodEnd,
+      cancelAtPeriodEnd: subscription.cancelAtPeriodEnd,
+      eventLimit: subscription.eventLimit,
+      monthlyEventCount: org.monthlyEventCount || 0,
+      interval: subscription.interval,
+      ...limits,
+    };
+  }
+
+  // Free tier
   return {
     id: null,
-    planName: "free",
-    status: "free",
+    planName: subscription.planName,
+    status: subscription.status,
     currentPeriodEnd: getStartOfNextMonth(),
     currentPeriodStart: getStartOfMonth(),
-    eventLimit: DEFAULT_EVENT_LIMIT,
+    eventLimit: subscription.eventLimit,
     monthlyEventCount: org.monthlyEventCount || 0,
     trialDaysRemaining: 0,
+    ...limits,
   };
 }
 
@@ -140,6 +220,17 @@ export async function getSubscription(
     return reply.status(400).send({ error: "Organization ID is required" });
   }
 
+  // Verify user is a member of this organization
+  const memberResult = await db
+    .select({ role: member.role })
+    .from(member)
+    .where(and(eq(member.userId, userId), eq(member.organizationId, organizationId)))
+    .limit(1);
+
+  if (!memberResult.length) {
+    return reply.status(403).send({ error: "You do not have access to this organization" });
+  }
+
   try {
     const responseData = await getSubscriptionInner(organizationId);
     return reply.send(responseData);
@@ -147,9 +238,7 @@ export async function getSubscription(
     console.error("Get Subscription Error:", error);
     // Handle specific Stripe errors if necessary
     if (error instanceof Stripe.errors.StripeError) {
-      return reply
-        .status(error.statusCode || 500)
-        .send({ error: error.message });
+      return reply.status(error.statusCode || 500).send({ error: error.message });
     } else {
       return reply.status(500).send({
         error: "Failed to fetch subscription details",

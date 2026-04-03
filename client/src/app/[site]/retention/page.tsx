@@ -1,58 +1,38 @@
 "use client";
 
+import { useExtracted } from "next-intl";
+import { ChartColumnDecreasing } from "lucide-react";
 import { DateTime } from "luxon"; // Import Luxon for date formatting
 import { Fragment, useMemo, useState } from "react";
-import {
-  RetentionMode,
-  useGetRetention,
-} from "../../../api/analytics/useGetRetention";
-import { ThreeDotLoader } from "../../../components/Loaders";
-import { MobileSidebar } from "../../../components/MobileSidebar";
-import {
-  Card,
-  CardContent,
-  CardHeader,
-  CardTitle,
-} from "../../../components/ui/card";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "../../../components/ui/select";
-import { Tabs, TabsList, TabsTrigger } from "../../../components/ui/tabs";
-import { RetentionChart } from "./RetentionChart";
-import { NothingFound } from "../../../components/NothingFound";
-import { useSetPageTitle } from "../../../hooks/useSetPageTitle";
+import { useGetRetention } from "../../../api/analytics/hooks/useGetRetention";
+import { RetentionMode } from "../../../api/analytics/endpoints";
 import { DisabledOverlay } from "../../../components/DisabledOverlay";
-
-// Available time range options (in days)
-const RANGE_OPTIONS = [
-  { value: "7", label: "Last 7 days" },
-  { value: "14", label: "Last 14 days" },
-  { value: "30", label: "Last 30 days" },
-  { value: "60", label: "Last 60 days" },
-  { value: "90", label: "Last 90 days" },
-  { value: "180", label: "Last 6 months" },
-  { value: "365", label: "Last 1 year" },
-];
+import { ThreeDotLoader } from "../../../components/Loaders";
+import { NothingFound } from "../../../components/NothingFound";
+import { Card, CardContent, CardHeader, CardTitle } from "../../../components/ui/card";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../../../components/ui/select";
+import { Tabs, TabsList, TabsTrigger } from "../../../components/ui/tabs";
+import { useSetPageTitle } from "../../../hooks/useSetPageTitle";
+import { MobileSidebar } from "../components/Sidebar/MobileSidebar";
+import { RetentionChart } from "./RetentionChart";
+import { ErrorState } from "../../../components/ErrorState";
 
 // Dynamic color function that creates a smooth gradient based on retention percentage
 const getRetentionColor = (
-  percentage: number | null
+  percentage: number | null,
+  isDark: boolean
 ): { backgroundColor: string; textColor: string } => {
   if (percentage === null || isNaN(percentage)) {
     return {
-      backgroundColor: "rgb(38, 38, 38)", // bg-neutral-800
+      backgroundColor: isDark ? "rgb(38, 38, 38)" : "rgb(250, 250, 250)", // bg-neutral-800 : bg-neutral-50
       textColor: "transparent",
     };
   }
 
   if (percentage === 0) {
     return {
-      backgroundColor: "rgb(38, 38, 38)", // bg-neutral-800
-      textColor: "white",
+      backgroundColor: isDark ? "rgb(38, 38, 38)" : "rgb(250, 250, 250)", // bg-neutral-800 : bg-neutral-50
+      textColor: isDark ? "white" : "rgb(64, 64, 64)",
     };
   }
 
@@ -73,27 +53,39 @@ const getRetentionColor = (
   // Use the scaled opacity for the background color
   return {
     backgroundColor: `rgba(16, 185, 129, ${scaledOpacity.toFixed(2)})`,
-    textColor: "white",
+    textColor: isDark ? "white" : "black",
   };
 };
 
 export default function RetentionPage() {
-  useSetPageTitle("Rybbit · Retention");
+  const t = useExtracted();
+  useSetPageTitle("Retention");
 
   // State for the retention mode (day or week)
   const [mode, setMode] = useState<RetentionMode>("week");
   // State for the data time range (days)
   const [timeRange, setTimeRange] = useState<number>(30);
 
+  // Check if dark mode is active
+  const [isDark, setIsDark] = useState(true);
+
+  // Detect theme on client side
+  if (typeof window !== "undefined") {
+    const checkTheme = () => {
+      const isDarkMode = document.documentElement.classList.contains("dark");
+      if (isDarkMode !== isDark) {
+        setIsDark(isDarkMode);
+      }
+    };
+    checkTheme();
+  }
+
   // Use the updated hook without the limit parameter
   const { data, isLoading, isError } = useGetRetention(mode, timeRange);
 
   // Get sorted cohort keys (oldest first)
   const cohortKeys = useMemo(
-    () =>
-      data?.cohorts
-        ? Object.keys(data.cohorts).sort((a, b) => a.localeCompare(b))
-        : [],
+    () => (data?.cohorts ? Object.keys(data.cohorts).sort((a, b) => a.localeCompare(b)) : []),
     [data?.cohorts]
   );
 
@@ -108,26 +100,20 @@ export default function RetentionPage() {
 
       // If same month, don't repeat month name
       if (startDate.month === endDate.month) {
-        return `${startDate.toFormat("MMM dd")} - ${endDate.toFormat(
-          "dd, yyyy"
-        )}`;
+        return `${startDate.toFormat("MMM dd")} - ${endDate.toFormat("dd, yyyy")}`;
       } else if (startDate.year === endDate.year) {
         // Different months, same year
-        return `${startDate.toFormat("MMM dd")} - ${endDate.toFormat(
-          "MMM dd, yyyy"
-        )}`;
+        return `${startDate.toFormat("MMM dd")} - ${endDate.toFormat("MMM dd, yyyy")}`;
       } else {
         // Different years
-        return `${startDate.toFormat("MMM dd, yyyy")} - ${endDate.toFormat(
-          "MMM dd, yyyy"
-        )}`;
+        return `${startDate.toFormat("MMM dd, yyyy")} - ${endDate.toFormat("MMM dd, yyyy")}`;
       }
     }
   };
 
   // Labels for column headers based on mode
   const getPeriodLabel = (index: number) => {
-    return mode === "day" ? `Day ${index}` : `Week ${index}`;
+    return mode === "day" ? t("Day {index}", { index: String(index) }) : t("Week {index}", { index: String(index) });
   };
 
   const handleModeChange = (newMode: string) => {
@@ -146,30 +132,28 @@ export default function RetentionPage() {
       </div>
       <div className="flex items-center gap-3 flex-wrap justify-end">
         <div className="flex items-center gap-2">
-          <Select
-            value={timeRange.toString()}
-            onValueChange={handleRangeChange}
-            disabled={isLoading}
-          >
+          <Select value={timeRange.toString()} onValueChange={handleRangeChange} disabled={isLoading}>
             <SelectTrigger id="time-range">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              {RANGE_OPTIONS.map((option) => (
-                <SelectItem key={option.value} value={option.value}>
-                  {option.label}
-                </SelectItem>
-              ))}
+              <SelectItem value="7">{t("Last 7 days")}</SelectItem>
+              <SelectItem value="14">{t("Last 14 days")}</SelectItem>
+              <SelectItem value="30">{t("Last 30 days")}</SelectItem>
+              <SelectItem value="60">{t("Last 60 days")}</SelectItem>
+              <SelectItem value="90">{t("Last 90 days")}</SelectItem>
+              <SelectItem value="180">{t("Last 6 months")}</SelectItem>
+              <SelectItem value="365">{t("Last 1 year")}</SelectItem>
             </SelectContent>
           </Select>
         </div>
         <Tabs value={mode} onValueChange={handleModeChange}>
           <TabsList>
             <TabsTrigger value="day" disabled={isLoading}>
-              Daily
+              {t("Daily")}
             </TabsTrigger>
             <TabsTrigger value="week" disabled={isLoading}>
-              Weekly
+              {t("Weekly")}
             </TabsTrigger>
           </TabsList>
         </Tabs>
@@ -183,15 +167,10 @@ export default function RetentionPage() {
       <div className="pt-4">
         <Card>
           <CardContent>
-            <div className="p-8 text-center">
-              <div className="text-red-500 mb-2 font-medium">
-                Error loading retention data
-              </div>
-              <p className="text-neutral-500 text-sm">
-                There was a problem fetching the retention data. Please try
-                again later.
-              </p>
-            </div>
+            <ErrorState
+              title={t("Failed to load retention data")}
+              message={t("There was a problem fetching the retention data. Please try again later.")}
+            />
           </CardContent>
         </Card>
       </div>
@@ -203,30 +182,27 @@ export default function RetentionPage() {
     return (
       <div className="p-2 md:p-4 max-w-[1300px] mx-auto flex flex-col gap-3">
         <NothingFound
-          title={"No retention data available"}
-          description={
-            "Try selecting a different time range or make sure you have tracking data in the system."
-          }
+          icon={<ChartColumnDecreasing className="w-10 h-10" />}
+          title={t("No retention data available")}
+          description={t("Try selecting a different time range or make sure you have tracking data in the system.")}
         />
       </div>
     );
   }
 
   const periodHeaders =
-    !isLoading && data
-      ? Array.from({ length: data.maxPeriods + 1 }, (_, i) => getPeriodLabel(i))
-      : [];
+    !isLoading && data ? Array.from({ length: data.maxPeriods + 1 }, (_, i) => getPeriodLabel(i)) : [];
 
   return (
-    <DisabledOverlay message="Retention">
+    <DisabledOverlay message="Retention" featurePath="retention">
       <div className="p-2 md:p-4 max-w-[1300px] mx-auto flex flex-col gap-3">
         {/* Single Card containing both chart and grid */}
         <FilterControls />
-        <Card>
+        <Card className="overflow-visible">
           <CardHeader className="flex flex-row items-center justify-between pb-2">
-            <CardTitle>Retention</CardTitle>
+            <CardTitle>{t("Retention")}</CardTitle>
           </CardHeader>
-          <CardContent className="space-y-6">
+          <CardContent className="space-y-6 overflow-visible">
             {isLoading ? (
               <ThreeDotLoader />
             ) : data ? (
@@ -242,60 +218,52 @@ export default function RetentionPage() {
               ) : data ? (
                 <div className="overflow-x-auto">
                   <div
-                    className="inline-grid gap-px bg-neutral-900 rounded-lg shadow-lg"
+                    className="inline-grid gap-px bg-neutral-50 dark:bg-neutral-900 rounded-lg"
                     style={{
-                      gridTemplateColumns: `minmax(120px, auto) repeat(${
-                        data.maxPeriods + 1
-                      }, minmax(80px, auto))`,
+                      gridTemplateColumns: `minmax(120px, auto) repeat(${data.maxPeriods + 1}, minmax(80px, auto))`,
                     }}
                   >
                     {/* Header Row */}
-                    <div className="p-2 text-sm font-semibold bg-neutral-900 text-neutral-100 text-center sticky left-0 z-10 border-b border-r border-neutral-700">
-                      Cohort
+                    <div className="p-2 text-sm font-semibold bg-white dark:bg-neutral-900 text-neutral-600 dark:text-neutral-100 text-center sticky left-0 z-10 border-b border-r border-neutral-50 dark:border-neutral-700">
+                      {t("Cohort")}
                     </div>
-                    {periodHeaders.map((header) => (
+                    {periodHeaders.map(header => (
                       <div
                         key={header}
-                        className="p-2 text-sm bg-neutral-900 text-neutral-100 text-center border-b border-neutral-700"
+                        className="p-2 text-sm bg-white dark:bg-neutral-900 text-neutral-600 dark:text-neutral-100 text-center border-b border-neutral-50 dark:border-neutral-700"
                       >
                         {header}
                       </div>
                     ))}
 
                     {/* Data Rows */}
-                    {cohortKeys.map((cohortPeriod) => (
+                    {cohortKeys.map(cohortPeriod => (
                       <Fragment key={cohortPeriod}>
                         {/* Cohort Info Cell */}
-                        <div className="py-2 px-2 bg-neutral-900 text-sm sticky left-0 z-10 border-r border-neutral-800">
-                          <div className="whitespace-nowrap text-neutral-100">
+                        <div className="py-2 px-2 bg-white dark:bg-neutral-900 text-sm sticky left-0 z-10 border-r border-neutral-50 dark:border-neutral-800">
+                          <div className="whitespace-nowrap text-neutral-700 dark:text-neutral-100">
                             {formatDate(cohortPeriod)}
                           </div>
-                          <div className="text-xs text-neutral-300 mt-1 whitespace-nowrap">
-                            {data.cohorts[cohortPeriod].size.toLocaleString()}{" "}
-                            users
+                          <div className="text-xs text-neutral-500 dark:text-neutral-300 mt-1 whitespace-nowrap">
+                            {t("{count} users", { count: data.cohorts[cohortPeriod].size.toLocaleString() })}
                           </div>
                         </div>
                         {/* Retention Cells */}
-                        {data.cohorts[cohortPeriod].percentages.map(
-                          (percentage: number | null, index: number) => {
-                            const { backgroundColor, textColor } =
-                              getRetentionColor(percentage);
-                            return (
-                              <div
-                                key={`${cohortPeriod}-period-${index}`}
-                                className="m-[2px] text-center flex items-center justify-center font-medium transition-colors duration-150 bg-neutral-900 rounded-md"
-                                style={{
-                                  backgroundColor,
-                                  color: textColor,
-                                }}
-                              >
-                                {percentage !== null
-                                  ? `${percentage.toFixed(1)}%`
-                                  : "-"}
-                              </div>
-                            );
-                          }
-                        )}
+                        {data.cohorts[cohortPeriod].percentages.map((percentage: number | null, index: number) => {
+                          const { backgroundColor, textColor } = getRetentionColor(percentage, isDark);
+                          return (
+                            <div
+                              key={`${cohortPeriod}-period-${index}`}
+                              className="m-[2px] text-center flex items-center justify-center font-medium transition-colors duration-150 bg-white dark:bg-neutral-900 rounded-md"
+                              style={{
+                                backgroundColor,
+                                color: textColor,
+                              }}
+                            >
+                              {percentage !== null ? `${percentage.toFixed(1)}%` : "-"}
+                            </div>
+                          );
+                        })}
                       </Fragment>
                     ))}
                   </div>

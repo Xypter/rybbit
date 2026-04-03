@@ -1,13 +1,8 @@
+import { FilterParams } from "@rybbit/shared";
 import { FastifyReply, FastifyRequest } from "fastify";
 import { clickhouse } from "../../db/clickhouse/clickhouse.js";
-import {
-  getFilterStatement,
-  getTimeStatement,
-  processResults,
-} from "./utils.js";
-import { getUserHasAccessToSitePublic } from "../../lib/auth-utils.js";
-import { FilterParameter } from "./types.js";
-import { FilterParams } from "@rybbit/shared";
+import { getFilterStatement } from "./utils/getFilterStatement.js";
+import { getTimeStatement, processResults } from "./utils/utils.js";
 
 type GetOverviewResponse = {
   sessions: number;
@@ -18,88 +13,69 @@ type GetOverviewResponse = {
   session_duration: number;
 };
 
-const getQuery = (params: FilterParams) => {
-  const filterStatement = getFilterStatement(params.filters);
+const getQuery = (params: FilterParams, siteId: number) => {
+  const timeStatement = getTimeStatement(params);
+  const filterStatement = getFilterStatement(params.filters, siteId, timeStatement);
 
-  return `SELECT
-      session_stats.sessions,
-      session_stats.pages_per_session,
-      session_stats.bounce_rate * 100 AS bounce_rate,
-      session_stats.session_duration,
-      page_stats.pageviews,
-      page_stats.users  
-    FROM
-    (
-        -- Session-level metrics
+  return `
+    WITH
+    AllSessionPageviews AS (
         SELECT
-            COUNT() AS sessions,
-            AVG(pages_in_session) AS pages_per_session,
-            sumIf(1, pages_in_session = 1) / COUNT() AS bounce_rate,
-            AVG(end_time - start_time) AS session_duration
-        FROM
-            (
-                -- One row per session
-                SELECT
-                    session_id,
-                    MIN(timestamp) AS start_time,
-                    MAX(timestamp) AS end_time,
-                    COUNT(CASE WHEN type = 'pageview' THEN 1 END) AS pages_in_session
-                FROM events
-                WHERE
-                    site_id = {siteId:Int32}
-                    ${filterStatement}
-                    ${getTimeStatement(params)}
-                GROUP BY session_id
-            )
-        ) AS session_stats
-        CROSS JOIN
-        (
-            -- Page-level and user-level metrics
-            SELECT
-                COUNT(*)                   AS pageviews,
-                COUNT(DISTINCT user_id)    AS users
-            FROM events
-            WHERE 
-                site_id = {siteId:Int32}
-                ${filterStatement}
-                ${getTimeStatement(params)}
-                AND type = 'pageview'
-        ) AS page_stats`;
+            session_id,
+            countIf(type = 'pageview') AS total_pageviews_in_session
+        FROM events
+        WHERE
+            site_id = {siteId:Int32}
+            ${timeStatement}
+        GROUP BY session_id
+    ),
+    FilteredSessionsWithStats AS (
+        SELECT
+            session_id,
+            anyLast(user_id) AS user_id,
+            MIN(timestamp) AS start_time,
+            MAX(timestamp) AS end_time,
+            countIf(type = 'pageview') AS filtered_pageviews
+        FROM events
+        WHERE
+            site_id = {siteId:Int32}
+            ${filterStatement}
+            ${timeStatement}
+        GROUP BY session_id
+    )
+    SELECT
+        COUNT() AS sessions,
+        AVG(asp.total_pageviews_in_session) AS pages_per_session,
+        sumIf(1, asp.total_pageviews_in_session = 1) / COUNT() * 100 AS bounce_rate,
+        AVG(f.end_time - f.start_time) AS session_duration,
+        SUM(f.filtered_pageviews) AS pageviews,
+        COUNT(DISTINCT f.user_id) AS users
+    FROM FilteredSessionsWithStats f
+    LEFT JOIN AllSessionPageviews asp ON f.session_id = asp.session_id`;
 };
 
 export interface OverviewRequest {
   Params: {
-    site: string;
+    siteId: string;
   };
   Querystring: FilterParams;
 }
 
-export async function getOverview(
-  req: FastifyRequest<OverviewRequest>,
-  res: FastifyReply
-) {
-  const {
-    startDate,
-    endDate,
-    timeZone,
-    filters,
-    pastMinutesStart,
-    pastMinutesEnd,
-  } = req.query;
-  const site = req.params.site;
-  const userHasAccessToSite = await getUserHasAccessToSitePublic(req, site);
-  if (!userHasAccessToSite) {
-    return res.status(403).send({ error: "Forbidden" });
-  }
+export async function getOverview(req: FastifyRequest<OverviewRequest>, res: FastifyReply) {
+  const { start_date, end_date, time_zone, filters, past_minutes_start, past_minutes_end } = req.query;
+  const site = req.params.siteId;
 
-  const query = getQuery({
-    startDate,
-    endDate,
-    timeZone,
-    filters,
-    pastMinutesStart,
-    pastMinutesEnd,
-  });
+  const query = getQuery(
+    {
+      start_date,
+      end_date,
+      time_zone,
+      filters,
+      past_minutes_start,
+      past_minutes_end,
+    },
+    Number(site)
+  );
 
   try {
     const result = await clickhouse.query({

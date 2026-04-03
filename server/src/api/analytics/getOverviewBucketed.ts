@@ -2,77 +2,36 @@ import { FilterParams } from "@rybbit/shared";
 import { FastifyReply, FastifyRequest } from "fastify";
 import SqlString from "sqlstring";
 import { clickhouse } from "../../db/clickhouse/clickhouse.js";
-import { getUserHasAccessToSitePublic } from "../../lib/auth-utils.js";
-import { validateTimeStatementFillParams } from "./query-validation.js";
-import {
-  getFilterStatement,
-  getTimeStatement,
-  processResults,
-} from "./utils.js";
-
-const TimeBucketToFn = {
-  minute: "toStartOfMinute",
-  five_minutes: "toStartOfFiveMinutes",
-  ten_minutes: "toStartOfTenMinutes",
-  fifteen_minutes: "toStartOfFifteenMinutes",
-  hour: "toStartOfHour",
-  day: "toStartOfDay",
-  week: "toStartOfWeek",
-  month: "toStartOfMonth",
-  year: "toStartOfYear",
-};
-
-const bucketIntervalMap = {
-  minute: "1 MINUTE",
-  five_minutes: "5 MINUTES",
-  ten_minutes: "10 MINUTES",
-  fifteen_minutes: "15 MINUTES",
-  hour: "1 HOUR",
-  day: "1 DAY",
-  week: "7 DAY",
-  month: "1 MONTH",
-  year: "1 YEAR",
-} as const;
+import { validateTimeStatementFillParams } from "./utils/query-validation.js";
+import { getTimeStatement, processResults, TimeBucketToFn, bucketIntervalMap } from "./utils/utils.js";
+import { getFilterStatement } from "./utils/getFilterStatement.js";
+import { TimeBucket } from "./types.js";
 
 function getTimeStatementFill(params: FilterParams, bucket: TimeBucket) {
-  const { params: validatedParams, bucket: validatedBucket } =
-    validateTimeStatementFillParams(params, bucket);
+  const { params: validatedParams, bucket: validatedBucket } = validateTimeStatementFillParams(params, bucket);
 
-  if (
-    validatedParams.startDate &&
-    validatedParams.endDate &&
-    validatedParams.timeZone
-  ) {
-    const { startDate, endDate, timeZone } = validatedParams;
+  if (validatedParams.start_date && validatedParams.end_date && validatedParams.time_zone) {
+    const { start_date, end_date, time_zone } = validatedParams;
     return `WITH FILL FROM toTimeZone(
-      toDateTime(${
-        TimeBucketToFn[validatedBucket]
-      }(toDateTime(${SqlString.escape(startDate)}, ${SqlString.escape(
-        timeZone
+      toDateTime(${TimeBucketToFn[validatedBucket]}(toDateTime(${SqlString.escape(start_date)}, ${SqlString.escape(
+        time_zone
       )}))),
       'UTC'
       )
       TO if(
-        toDate(${SqlString.escape(endDate)}) = toDate(now(), ${SqlString.escape(
-          timeZone
-        )}),
+        toDate(${SqlString.escape(end_date)}) = toDate(now(), ${SqlString.escape(time_zone)}),
         now(),
         toTimeZone(
-          toDateTime(${
-            TimeBucketToFn[validatedBucket]
-          }(toDateTime(${SqlString.escape(endDate)}, ${SqlString.escape(
-            timeZone
+          toDateTime(${TimeBucketToFn[validatedBucket]}(toDateTime(${SqlString.escape(end_date)}, ${SqlString.escape(
+            time_zone
           )}))) + INTERVAL 1 DAY,
           'UTC'
         )
       ) STEP INTERVAL ${bucketIntervalMap[validatedBucket]}`;
   }
   // For specific past minutes range - convert to exact timestamps for better performance
-  if (
-    validatedParams.pastMinutesStart !== undefined &&
-    validatedParams.pastMinutesEnd !== undefined
-  ) {
-    const { pastMinutesStart: start, pastMinutesEnd: end } = validatedParams;
+  if (validatedParams.past_minutes_start !== undefined && validatedParams.past_minutes_end !== undefined) {
+    const { past_minutes_start: start, past_minutes_end: end } = validatedParams;
 
     // Calculate exact timestamps in JavaScript to avoid runtime ClickHouse calculations
     const now = new Date();
@@ -80,13 +39,10 @@ function getTimeStatementFill(params: FilterParams, bucket: TimeBucket) {
     const endTimestamp = new Date(now.getTime() - end * 60 * 1000);
 
     // Format as YYYY-MM-DD HH:MM:SS without milliseconds for ClickHouse
-    const startIso = startTimestamp
-      .toISOString()
-      .slice(0, 19)
-      .replace("T", " ");
+    const startIso = startTimestamp.toISOString().slice(0, 19).replace("T", " ");
     const endIso = endTimestamp.toISOString().slice(0, 19).replace("T", " ");
 
-    return ` WITH FILL 
+    return ` WITH FILL
       FROM ${TimeBucketToFn[validatedBucket]}(toDateTime(${SqlString.escape(startIso)}))
       TO ${TimeBucketToFn[validatedBucket]}(toDateTime(${SqlString.escape(endIso)})) + INTERVAL 1 ${
         validatedBucket === "minute"
@@ -110,26 +66,52 @@ function getTimeStatementFill(params: FilterParams, bucket: TimeBucket) {
   return "";
 }
 
-const getQuery = (params: FilterParams<{ bucket: TimeBucket }>) => {
-  const {
-    startDate,
-    endDate,
-    timeZone,
-    bucket,
-    filters,
-    pastMinutesStart,
-    pastMinutesEnd,
-  } = params;
-  const filterStatement = getFilterStatement(filters);
-
+const getQuery = (params: FilterParams<{ bucket: TimeBucket }>, siteId: number) => {
+  const { start_date, end_date, time_zone, bucket = "hour", filters, past_minutes_start, past_minutes_end } = params;
+  const timeStatement = getTimeStatement(params);
+  const filterStatement = getFilterStatement(filters, siteId, timeStatement);
   const pastMinutesRange =
-    pastMinutesStart !== undefined && pastMinutesEnd !== undefined
-      ? { start: Number(pastMinutesStart), end: Number(pastMinutesEnd) }
+    past_minutes_start !== undefined && past_minutes_end !== undefined
+      ? { start: Number(past_minutes_start), end: Number(past_minutes_end) }
       : undefined;
 
-  const isAllTime = !startDate && !endDate && !pastMinutesRange;
+  const isAllTime = !start_date && !end_date && !pastMinutesRange;
+  const fillClause = isAllTime ? "" : getTimeStatementFill(params, bucket);
+  const tzEscaped = SqlString.escape(time_zone);
 
-  const query = `
+  return `
+WITH
+AllSessionPageviews AS (
+    SELECT
+        session_id,
+        countIf(type = 'pageview') AS total_pageviews_in_session
+    FROM events
+    WHERE
+        site_id = {siteId:Int32}
+        ${getTimeStatement(params)}
+    GROUP BY session_id
+),
+FilteredSessions AS (
+    SELECT
+        session_id,
+        MIN(timestamp) AS start_time,
+        MAX(timestamp) AS end_time
+    FROM events
+    WHERE
+        site_id = {siteId:Int32}
+        ${filterStatement}
+        ${getTimeStatement(params)}
+    GROUP BY session_id
+),
+SessionsWithPageviews AS (
+    SELECT
+        fs.session_id,
+        fs.start_time,
+        fs.end_time,
+        asp.total_pageviews_in_session
+    FROM FilteredSessions fs
+    LEFT JOIN AllSessionPageviews asp ON fs.session_id = asp.session_id
+)
 SELECT
     session_stats.time AS time,
     session_stats.sessions,
@@ -138,77 +120,40 @@ SELECT
     session_stats.session_duration,
     page_stats.pageviews,
     page_stats.users
-FROM 
+FROM
 (
     SELECT
-         toDateTime(${
-           TimeBucketToFn[bucket]
-         }(toTimeZone(start_time, ${SqlString.escape(timeZone)}))) AS time,
+         toDateTime(${TimeBucketToFn[bucket]}(toTimeZone(start_time, ${tzEscaped}))) AS time,
         COUNT() AS sessions,
-        AVG(pages_in_session) AS pages_per_session,
-        sumIf(1, pages_in_session = 1) / COUNT() AS bounce_rate,
+        AVG(total_pageviews_in_session) AS pages_per_session,
+        sumIf(1, total_pageviews_in_session = 1) / COUNT() AS bounce_rate,
         AVG(end_time - start_time) AS session_duration
-    FROM
-    (
-        /* One row per session */
-        SELECT
-            session_id,
-            MIN(timestamp) AS start_time,
-            MAX(timestamp) AS end_time,
-            COUNT(*) AS pages_in_session
-        FROM events
-        WHERE 
-            site_id = {siteId:Int32}
-            ${filterStatement}
-            ${getTimeStatement(params)}
-            AND type = 'pageview'
-        GROUP BY session_id
-    )
-    GROUP BY time ORDER BY time ${
-      isAllTime ? "" : getTimeStatementFill(params, bucket)
-    }
+    FROM SessionsWithPageviews
+    GROUP BY time ORDER BY time ${fillClause}
 ) AS session_stats
 FULL JOIN
 (
     SELECT
-         toDateTime(${
-           TimeBucketToFn[bucket]
-         }(toTimeZone(timestamp, ${SqlString.escape(timeZone)}))) AS time,
-        COUNT(*) AS pageviews,
+        toDateTime(${TimeBucketToFn[bucket]}(toTimeZone(timestamp, ${tzEscaped}))) AS time,
+        countIf(type = 'pageview') AS pageviews,
         COUNT(DISTINCT user_id) AS users
     FROM events
     WHERE
         site_id = {siteId:Int32}
         ${filterStatement}
         ${getTimeStatement(params)}
-        AND type = 'pageview'
-    GROUP BY time ORDER BY time ${
-      isAllTime ? "" : getTimeStatementFill(params, bucket)
-    }
+    GROUP BY time ORDER BY time ${fillClause}
 ) AS page_stats
 USING time
 ORDER BY time`;
-
-  return query;
 };
-
-type TimeBucket =
-  | "minute"
-  | "five_minutes"
-  | "ten_minutes"
-  | "fifteen_minutes"
-  | "hour"
-  | "day"
-  | "week"
-  | "month"
-  | "year";
 
 type getOverviewBucketed = { time: string; pageviews: number }[];
 
 export async function getOverviewBucketed(
   req: FastifyRequest<{
     Params: {
-      site: string;
+      siteId: string;
     };
     Querystring: FilterParams<{
       bucket: TimeBucket;
@@ -216,31 +161,21 @@ export async function getOverviewBucketed(
   }>,
   res: FastifyReply
 ) {
-  const {
-    startDate,
-    endDate,
-    timeZone,
-    bucket,
-    filters,
-    pastMinutesStart,
-    pastMinutesEnd,
-  } = req.query;
-  const site = req.params.site;
+  const { start_date, end_date, time_zone, bucket, filters, past_minutes_start, past_minutes_end } = req.query;
+  const site = req.params.siteId;
 
-  const userHasAccessToSite = await getUserHasAccessToSitePublic(req, site);
-  if (!userHasAccessToSite) {
-    return res.status(403).send({ error: "Forbidden" });
-  }
-
-  const query = getQuery({
-    startDate,
-    endDate,
-    timeZone,
-    bucket,
-    filters,
-    pastMinutesStart,
-    pastMinutesEnd,
-  });
+  const query = getQuery(
+    {
+      start_date,
+      end_date,
+      time_zone,
+      bucket,
+      filters,
+      past_minutes_start,
+      past_minutes_end,
+    },
+    Number(site)
+  );
 
   try {
     const result = await clickhouse.query({

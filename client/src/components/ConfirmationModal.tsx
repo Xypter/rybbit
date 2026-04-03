@@ -1,4 +1,8 @@
+import { AlertCircle } from "lucide-react";
+import { useExtracted } from "next-intl";
 import React, { useState } from "react";
+import { Alert, AlertDescription, AlertTitle } from "./ui/alert";
+import { Button, ButtonProps } from "./ui/button";
 import {
   Dialog,
   DialogContent,
@@ -8,9 +12,6 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "./ui/dialog";
-import { Button, ButtonProps } from "./ui/button";
-import { Alert, AlertDescription, AlertTitle } from "./ui/alert";
-import { AlertCircle } from "lucide-react";
 
 export const ConfirmationModal: React.FC<{
   title: React.ReactNode;
@@ -20,15 +21,8 @@ export const ConfirmationModal: React.FC<{
   setIsOpen: (b: boolean) => void;
   onConfirm: () => void;
   primaryAction?: ButtonProps;
-}> = ({
-  title,
-  description,
-  children,
-  isOpen,
-  onConfirm,
-  setIsOpen,
-  primaryAction,
-}) => {
+}> = ({ title, description, children, isOpen, onConfirm, setIsOpen, primaryAction }) => {
+  const t = useExtracted();
   const [error, setError] = useState<string | null>(null);
 
   const onSubmit = async () => {
@@ -43,7 +37,7 @@ export const ConfirmationModal: React.FC<{
 
   return (
     <div>
-      <Dialog open={isOpen} onOpenChange={(e) => setIsOpen(e)}>
+      <Dialog open={isOpen} onOpenChange={e => setIsOpen(e)}>
         <DialogTrigger asChild>{children}</DialogTrigger>
         <DialogContent className="max-w-lg">
           <DialogHeader>
@@ -53,23 +47,15 @@ export const ConfirmationModal: React.FC<{
           {error && (
             <Alert variant="destructive">
               <AlertCircle className="h-4 w-4" />
-              <AlertTitle>Error</AlertTitle>
+              <AlertTitle>{t("Error")}</AlertTitle>
               <AlertDescription>{error}</AlertDescription>
             </Alert>
           )}
           <DialogFooter>
-            <Button
-              type="submit"
-              onClick={() => setIsOpen(false)}
-              variant={"ghost"}
-            >
-              Cancel
+            <Button type="submit" onClick={() => setIsOpen(false)} variant={"ghost"}>
+              {t("Cancel")}
             </Button>
-            <Button
-              type="submit"
-              onClick={onSubmit}
-              {...primaryAction}
-            ></Button>
+            <Button type="submit" onClick={onSubmit} {...primaryAction}></Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

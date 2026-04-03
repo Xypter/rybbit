@@ -8,16 +8,10 @@ import Stripe from "stripe";
 interface PortalRequestBody {
   returnUrl: string;
   organizationId: string;
-  flowType?:
-    | "subscription_update"
-    | "subscription_cancel"
-    | "payment_method_update";
+  flowType?: "subscription_update" | "subscription_cancel" | "payment_method_update";
 }
 
-export async function createPortalSession(
-  request: FastifyRequest<{ Body: PortalRequestBody }>,
-  reply: FastifyReply
-) {
+export async function createPortalSession(request: FastifyRequest<{ Body: PortalRequestBody }>, reply: FastifyReply) {
   const { returnUrl, organizationId, flowType } = request.body;
   const userId = request.user?.id;
 
@@ -38,12 +32,7 @@ export async function createPortalSession(
         role: member.role,
       })
       .from(member)
-      .where(
-        and(
-          eq(member.userId, userId),
-          eq(member.organizationId, organizationId)
-        )
-      )
+      .where(and(eq(member.userId, userId), eq(member.organizationId, organizationId)))
       .limit(1);
 
     if (!memberResult.length || memberResult[0].role !== "owner") {
@@ -64,9 +53,7 @@ export async function createPortalSession(
     const org = orgResult[0];
 
     if (!org || !org.stripeCustomerId) {
-      return reply
-        .status(404)
-        .send({ error: "Organization or Stripe customer ID not found" });
+      return reply.status(404).send({ error: "Organization or Stripe customer ID not found" });
     }
 
     // 3. Create a Stripe Billing Portal Session, with optional direct flow
@@ -79,16 +66,23 @@ export async function createPortalSession(
     if (flowType) {
       if (flowType === "subscription_update") {
         // For subscription_update flow, we need to fetch the subscription ID first
-        const subscriptions = await (stripe as Stripe).subscriptions.list({
+        // Check both active and trialing statuses (trials have status "trialing")
+        let subscriptions = await (stripe as Stripe).subscriptions.list({
           customer: org.stripeCustomerId,
           status: "active",
           limit: 1,
         });
 
         if (subscriptions.data.length === 0) {
-          return reply
-            .status(404)
-            .send({ error: "No active subscription found" });
+          subscriptions = await (stripe as Stripe).subscriptions.list({
+            customer: org.stripeCustomerId,
+            status: "trialing",
+            limit: 1,
+          });
+        }
+
+        if (subscriptions.data.length === 0) {
+          return reply.status(404).send({ error: "No active subscription found" });
         }
 
         const subscriptionId = subscriptions.data[0].id;
@@ -101,16 +95,23 @@ export async function createPortalSession(
         };
       } else if (flowType === "subscription_cancel") {
         // For subscription_cancel flow, we need to fetch the subscription ID first
-        const subscriptions = await (stripe as Stripe).subscriptions.list({
+        // Check both active and trialing statuses (trials have status "trialing")
+        let subscriptions = await (stripe as Stripe).subscriptions.list({
           customer: org.stripeCustomerId,
           status: "active",
           limit: 1,
         });
 
         if (subscriptions.data.length === 0) {
-          return reply
-            .status(404)
-            .send({ error: "No active subscription found" });
+          subscriptions = await (stripe as Stripe).subscriptions.list({
+            customer: org.stripeCustomerId,
+            status: "trialing",
+            limit: 1,
+          });
+        }
+
+        if (subscriptions.data.length === 0) {
+          return reply.status(404).send({ error: "No active subscription found" });
         }
 
         const subscriptionId = subscriptions.data[0].id;
@@ -128,9 +129,7 @@ export async function createPortalSession(
       }
     }
 
-    const portalSession = await (
-      stripe as Stripe
-    ).billingPortal.sessions.create(sessionConfig);
+    const portalSession = await (stripe as Stripe).billingPortal.sessions.create(sessionConfig);
 
     // 4. Return the Billing Portal Session URL
     return reply.send({ portalUrl: portalSession.url });

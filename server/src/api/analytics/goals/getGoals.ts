@@ -2,16 +2,11 @@ import { FastifyReply, FastifyRequest } from "fastify";
 import { db } from "../../../db/postgres/postgres.js";
 import { goals } from "../../../db/postgres/schema.js";
 import { clickhouse } from "../../../db/clickhouse/clickhouse.js";
-import { getUserHasAccessToSitePublic } from "../../../lib/auth-utils.js";
 import { eq, desc, asc, sql } from "drizzle-orm";
-import {
-  getFilterStatement,
-  getTimeStatement,
-  processResults,
-  patternToRegex,
-} from "../utils.js";
+import { getTimeStatement, processResults, patternToRegex } from "../utils/utils.js";
 import SqlString from "sqlstring";
 import { FilterParams } from "@rybbit/shared";
+import { getFilterStatement } from "../utils/getFilterStatement.js";
 
 // Types for the response
 interface GoalWithConversions {
@@ -38,30 +33,19 @@ interface GetGoalsResponse {
 export async function getGoals(
   request: FastifyRequest<{
     Params: {
-      site: string;
+      siteId: string;
     };
     Querystring: FilterParams<{
       page?: string;
-      pageSize?: string;
+      page_size?: string;
       sort?: string;
       order?: "asc" | "desc";
     }>;
   }>,
   reply: FastifyReply
 ) {
-  const { site } = request.params;
-  const {
-    startDate,
-    endDate,
-    timeZone,
-    filters,
-    page = "1",
-    pageSize = "10",
-    sort = "createdAt",
-    order = "desc",
-    pastMinutesStart,
-    pastMinutesEnd,
-  } = request.query;
+  const { siteId } = request.params;
+  const { filters, page = "1", page_size: pageSize = "10", sort = "createdAt", order = "desc" } = request.query;
 
   const pageNumber = parseInt(page, 10);
   const pageSizeNumber = parseInt(pageSize, 10);
@@ -72,15 +56,7 @@ export async function getGoals(
   }
 
   if (isNaN(pageSizeNumber) || pageSizeNumber < 1 || pageSizeNumber > 100) {
-    return reply
-      .status(400)
-      .send({ error: "Invalid page size, must be between 1 and 100" });
-  }
-
-  // Check user access to site
-  const userHasAccessToSite = await getUserHasAccessToSitePublic(request, site);
-  if (!userHasAccessToSite) {
-    return reply.status(403).send({ error: "Forbidden" });
+    return reply.status(400).send({ error: "Invalid page size, must be between 1 and 100" });
   }
 
   try {
@@ -88,7 +64,7 @@ export async function getGoals(
     const totalGoalsResult = await db
       .select({ count: sql<number>`count(*)` })
       .from(goals)
-      .where(eq(goals.siteId, Number(site)));
+      .where(eq(goals.siteId, Number(siteId)));
 
     const totalGoals = totalGoalsResult[0]?.count || 0;
     const totalPages = Math.ceil(totalGoals / pageSizeNumber);
@@ -128,7 +104,7 @@ export async function getGoals(
     const siteGoals = await db
       .select()
       .from(goals)
-      .where(eq(goals.siteId, Number(site)))
+      .where(eq(goals.siteId, Number(siteId)))
       .orderBy(orderBy)
       .limit(pageSizeNumber)
       .offset((pageNumber - 1) * pageSizeNumber);
@@ -147,14 +123,14 @@ export async function getGoals(
     }
 
     // Build filter and time clauses for ClickHouse queries
-    const filterStatement = filters ? getFilterStatement(filters) : "";
     const timeStatement = getTimeStatement(request.query);
+    const filterStatement = filters ? getFilterStatement(filters, Number(siteId), timeStatement) : "";
 
     // First, get the total number of unique sessions (denominator for conversion rate)
     const totalSessionsQuery = `
       SELECT COUNT(DISTINCT session_id) AS total_sessions
       FROM events
-      WHERE site_id = ${SqlString.escape(Number(site))}
+      WHERE site_id = ${SqlString.escape(Number(siteId))}
       ${timeStatement}
       ${filterStatement}
     `;
@@ -164,9 +140,7 @@ export async function getGoals(
       format: "JSONEachRow",
     });
 
-    const totalSessionsData = await processResults<{ total_sessions: number }>(
-      totalSessionsResult
-    );
+    const totalSessionsData = await processResults<{ total_sessions: number }>(totalSessionsResult);
     const totalSessions = totalSessionsData[0]?.total_sessions || 0;
 
     // Build a single query that calculates all goal conversions at once using conditional aggregation
@@ -179,48 +153,53 @@ export async function getGoals(
         if (!pathPattern) continue;
 
         const regex = patternToRegex(pathPattern);
+        let pathClause = `type = 'pageview' AND match(pathname, ${SqlString.escape(regex)})`;
+
+        // Support both new propertyFilters array and legacy single property
+        const filters = goal.config.propertyFilters || (
+          goal.config.eventPropertyKey && goal.config.eventPropertyValue !== undefined
+            ? [{ key: goal.config.eventPropertyKey, value: goal.config.eventPropertyValue }]
+            : []
+        );
+
+        // Add property matching for page goals (URL parameters)
+        for (const filter of filters) {
+          // Access URL parameters from the url_parameters map
+          const propValueAccessor = `url_parameters[${SqlString.escape(filter.key)}]`;
+
+          // URL parameters are stored as strings in the Map
+          pathClause += ` AND ${propValueAccessor} = ${SqlString.escape(String(filter.value))}`;
+        }
+
         conditionalClauses.push(`
           COUNT(DISTINCT IF(
-            type = 'pageview' AND match(pathname, ${SqlString.escape(regex)}),
+            ${pathClause},
             session_id,
             NULL
           )) AS goal_${goal.goalId}_conversions
         `);
       } else if (goal.goalType === "event") {
         const eventName = goal.config.eventName;
-        const eventPropertyKey = goal.config.eventPropertyKey;
-        const eventPropertyValue = goal.config.eventPropertyValue;
 
         if (!eventName) continue;
 
-        let eventClause = `type = 'custom_event' AND event_name = ${SqlString.escape(
-          eventName
-        )}`;
+        let eventClause = `type = 'custom_event' AND event_name = ${SqlString.escape(eventName)}`;
+
+        // Support both new propertyFilters array and legacy single property
+        const filters = goal.config.propertyFilters || (
+          goal.config.eventPropertyKey && goal.config.eventPropertyValue !== undefined
+            ? [{ key: goal.config.eventPropertyKey, value: goal.config.eventPropertyValue }]
+            : []
+        );
 
         // Add property matching if needed
-        if (eventPropertyKey && eventPropertyValue !== undefined) {
-          // Access the sub-column directly for native JSON type
-          const propValueAccessor = `props.${SqlString.escapeId(
-            eventPropertyKey
-          )}`;
-
-          // Comparison needs to handle the Dynamic type returned
-          // Let ClickHouse handle the comparison based on the provided value type
-          if (typeof eventPropertyValue === "string") {
-            eventClause += ` AND toString(${propValueAccessor}) = ${SqlString.escape(
-              eventPropertyValue
-            )}`;
-          } else if (typeof eventPropertyValue === "number") {
-            // Use toFloat64 or toInt* depending on expected number type
-            eventClause += ` AND toFloat64OrNull(${propValueAccessor}) = ${SqlString.escape(
-              eventPropertyValue
-            )}`;
-          } else if (typeof eventPropertyValue === "boolean") {
-            // Booleans might be stored as 0/1 or true/false in JSON
-            // Comparing toUInt8 seems robust
-            eventClause += ` AND toUInt8OrNull(${propValueAccessor}) = ${
-              eventPropertyValue ? 1 : 0
-            }`;
+        for (const filter of filters) {
+          if (typeof filter.value === "string") {
+            eventClause += ` AND JSONExtractString(toString(props), ${SqlString.escape(filter.key)}) = ${SqlString.escape(filter.value)}`;
+          } else if (typeof filter.value === "number") {
+            eventClause += ` AND toFloat64(JSONExtractString(toString(props), ${SqlString.escape(filter.key)})) = ${SqlString.escape(filter.value)}`;
+          } else if (typeof filter.value === "boolean") {
+            eventClause += ` AND JSONExtractString(toString(props), ${SqlString.escape(filter.key)}) = ${SqlString.escape(filter.value ? 'true' : 'false')}`;
           }
         }
 
@@ -236,7 +215,7 @@ export async function getGoals(
 
     if (conditionalClauses.length === 0) {
       // If no valid goals to calculate, return the goals without conversion data
-      const goalsWithZeroConversions = siteGoals.map((goal) => ({
+      const goalsWithZeroConversions = siteGoals.map(goal => ({
         ...goal,
         total_conversions: 0,
         total_sessions: totalSessions,
@@ -259,7 +238,7 @@ export async function getGoals(
       SELECT
         ${conditionalClauses.join(", ")}
       FROM events
-      WHERE site_id = ${SqlString.escape(Number(site))}
+      WHERE site_id = ${SqlString.escape(Number(siteId))}
       ${timeStatement}
       ${filterStatement}
     `;
@@ -269,28 +248,23 @@ export async function getGoals(
       format: "JSONEachRow",
     });
 
-    const conversionData =
-      await processResults<Record<string, number>>(conversionResult);
+    const conversionData = await processResults<Record<string, number>>(conversionResult);
 
     // If we didn't get any results, use zeros
     const conversions = conversionData[0] || {};
 
     // Combine goals data with conversion metrics
-    const goalsWithConversions: GoalWithConversions[] = siteGoals.map(
-      (goal) => {
-        const totalConversions =
-          conversions[`goal_${goal.goalId}_conversions`] || 0;
-        const conversionRate =
-          totalSessions > 0 ? totalConversions / totalSessions : 0;
+    const goalsWithConversions: GoalWithConversions[] = siteGoals.map(goal => {
+      const totalConversions = conversions[`goal_${goal.goalId}_conversions`] || 0;
+      const conversionRate = totalSessions > 0 ? totalConversions / totalSessions : 0;
 
-        return {
-          ...goal,
-          total_conversions: totalConversions,
-          total_sessions: totalSessions,
-          conversion_rate: conversionRate,
-        };
-      }
-    );
+      return {
+        ...goal,
+        total_conversions: totalConversions,
+        total_sessions: totalSessions,
+        conversion_rate: conversionRate,
+      };
+    });
 
     return reply.send({
       data: goalsWithConversions,

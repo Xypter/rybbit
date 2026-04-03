@@ -1,16 +1,18 @@
 "use client";
 
 import { Skeleton } from "@/components/ui/skeleton";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn, formatSecondsAsMinutesAndSeconds } from "@/lib/utils";
 import NumberFlow from "@number-flow/react";
-import { TrendingDown, TrendingUp } from "lucide-react";
+import { ArrowDown, ArrowUp, ChevronDown, ChevronUp } from "lucide-react";
+import { useExtracted } from "next-intl";
 import { useState } from "react";
-import { useGetOverview } from "../../../../../api/analytics/useGetOverview";
-import { useGetOverviewBucketed } from "../../../../../api/analytics/useGetOverviewBucketed";
+import { useGetOverview } from "../../../../../api/analytics/hooks/useGetOverview";
+import { useGetOverviewBucketed } from "../../../../../api/analytics/hooks/useGetOverviewBucketed";
 import { StatType, useStore } from "../../../../../lib/store";
 import { SparklinesChart } from "./SparklinesChart";
 
-const ChangePercentage = ({
+export const ChangePercentage = ({
   current,
   previous,
   reverseColor,
@@ -35,17 +37,11 @@ const ChangePercentage = ({
   return (
     <div
       className={cn(
-        "text-xs flex items-center gap-1",
-        (reverseColor ? -change : change) > 0
-          ? "text-green-400"
-          : "text-red-400"
+        "text-xs flex items-center gap-0.5",
+        (reverseColor ? -change : change) > 0 ? "text-green-400" : "text-red-400"
       )}
     >
-      {change > 0 ? (
-        <TrendingUp className="w-4 h-4" />
-      ) : (
-        <TrendingDown className="w-4 h-4" />
-      )}
+      {change > 0 ? <ArrowUp className="w-3 h-3" strokeWidth={3} /> : <ArrowDown className="w-3 h-3" strokeWidth={3} />}
       {Math.abs(change).toFixed(1)}%
     </div>
   );
@@ -84,14 +80,12 @@ const Stat = ({
   // Filter and format sparklines data
   const sparklinesData =
     data?.data
-      ?.filter((d) => {
+      ?.filter(d => {
         // For past-minutes mode, ensure we only show data within the specified time range
         if (time.mode === "past-minutes") {
           const timestamp = new Date(d.time);
           const now = new Date();
-          const startTime = new Date(
-            now.getTime() - time.pastMinutesStart * 60 * 1000
-          );
+          const startTime = new Date(now.getTime() - time.pastMinutesStart * 60 * 1000);
           return timestamp >= startTime && timestamp <= now;
         }
         return true;
@@ -104,15 +98,15 @@ const Stat = ({
   return (
     <div
       className={cn(
-        "flex flex-col cursor-pointer border-r border-neutral-800 last:border-r-0 text-nowrap",
-        selectedStat === id && "bg-neutral-850"
+        "flex flex-col cursor-pointer border-r border-neutral-100 dark:border-neutral-800 last:border-r-0 text-nowrap",
+        selectedStat === id && "bg-neutral-0 dark:bg-neutral-850"
       )}
       onClick={() => setSelectedStat(id)}
       onMouseEnter={() => setIsHovering(true)}
       onMouseLeave={() => setIsHovering(false)}
     >
       <div className="flex flex-col px-3 py-2">
-        <div className="text-sm font-medium text-muted-foreground">{title}</div>
+        <div className="text-xs font-medium text-muted-foreground">{title}</div>
         <div className="text-2xl font-medium flex gap-2 items-center justify-between">
           {isLoading ? (
             <>
@@ -126,25 +120,33 @@ const Stat = ({
               ) : (
                 <span>
                   {
-                    <NumberFlow
-                      respectMotionPreference={false}
-                      value={decimals ? Number(value.toFixed(decimals)) : value}
-                      format={{ notation: "compact" }}
-                    />
+                    <Tooltip>
+                      <TooltipTrigger>
+                        <NumberFlow
+                          respectMotionPreference={false}
+                          value={decimals ? Number(value.toFixed(decimals)) : value}
+                          format={{ notation: "compact" }}
+                        />
+                      </TooltipTrigger>
+                      <TooltipContent>
+                        <NumberFlow
+                          respectMotionPreference={false}
+                          value={decimals ? Number(value.toFixed(decimals)) : value}
+                          format={{ notation: "standard" }}
+                        />
+                        {postfix && <span>{postfix}</span>}
+                      </TooltipContent>
+                    </Tooltip>
                   }
                   {postfix && <span>{postfix}</span>}
                 </span>
               )}
-              <ChangePercentage
-                current={value}
-                previous={previous}
-                reverseColor={reverseColor}
-              />
+              <ChangePercentage current={value} previous={previous} reverseColor={reverseColor} />
             </>
           )}
         </div>
       </div>
-      <div className="h-[40px] mt-[-16]">
+      <div className="h-[40px] -mt-4">
         <SparklinesChart data={sparklinesData} isHovering={isHovering} />
       </div>
     </div>
@@ -153,6 +155,7 @@ const Stat = ({
 
 export function Overview() {
   const { site } = useStore();
+  const t = useExtracted();
 
   // Current period - automatically handles both regular time-based and past-minutes queries
   const {
@@ -165,11 +168,10 @@ export function Overview() {
   });
 
   // Previous period - automatically handles both regular time-based and past-minutes queries
-  const { data: overviewDataPrevious, isLoading: isOverviewLoadingPrevious } =
-    useGetOverview({
-      site,
-      periodTime: "previous",
-    });
+  const { data: overviewDataPrevious, isLoading: isOverviewLoadingPrevious } = useGetOverview({
+    site,
+    periodTime: "previous",
+  });
 
   const isLoading = isOverviewLoading || isOverviewLoadingPrevious;
 
@@ -183,41 +185,27 @@ export function Overview() {
   const previousPageviews = overviewDataPrevious?.data?.pageviews ?? 0;
 
   const currentPagesPerSession = overviewData?.data?.pages_per_session ?? 0;
-  const previousPagesPerSession =
-    overviewDataPrevious?.data?.pages_per_session ?? 0;
+  const previousPagesPerSession = overviewDataPrevious?.data?.pages_per_session ?? 0;
 
   const currentBounceRate = overviewData?.data?.bounce_rate ?? 0;
   const previousBounceRate = overviewDataPrevious?.data?.bounce_rate ?? 0;
 
   const currentSessionDuration = overviewData?.data?.session_duration ?? 0;
-  const previousSessionDuration =
-    overviewDataPrevious?.data?.session_duration ?? 0;
+  const previousSessionDuration = overviewDataPrevious?.data?.session_duration ?? 0;
 
   return (
     <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-0 items-center">
+      <Stat title={t("Unique Users")} id="users" value={currentUsers} previous={previousUsers} isLoading={isLoading} />
+      <Stat title={t("Sessions")} id="sessions" value={currentSessions} previous={previousSessions} isLoading={isLoading} />
       <Stat
-        title="Unique Users"
-        id="users"
-        value={currentUsers}
-        previous={previousUsers}
-        isLoading={isLoading}
-      />
-      <Stat
-        title="Sessions"
-        id="sessions"
-        value={currentSessions}
-        previous={previousSessions}
-        isLoading={isLoading}
-      />
-      <Stat
-        title="Pageviews"
+        title={t("Pageviews")}
         id="pageviews"
         value={currentPageviews}
         previous={previousPageviews}
         isLoading={isLoading}
       />
       <Stat
-        title="Pages per Session"
+        title={t("Pages per Session")}
         id="pages_per_session"
         value={currentPagesPerSession}
         previous={previousPagesPerSession}
@@ -225,7 +213,7 @@ export function Overview() {
         isLoading={isLoading}
       />
       <Stat
-        title="Bounce Rate"
+        title={t("Bounce Rate")}
         id="bounce_rate"
         value={currentBounceRate}
         previous={previousBounceRate}
@@ -235,7 +223,7 @@ export function Overview() {
         reverseColor={true}
       />
       <Stat
-        title="Session Duration"
+        title={t("Session Duration")}
         id="session_duration"
         value={currentSessionDuration}
         previous={previousSessionDuration}

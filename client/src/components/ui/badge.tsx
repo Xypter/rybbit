@@ -4,23 +4,18 @@ import { cva, type VariantProps } from "class-variance-authority";
 import { cn } from "@/lib/utils";
 
 const badgeVariants = cva(
-  "inline-flex items-center rounded-md border border-neutral-200 px-1 py-0.5 text-xs font-semibold transition-colors focus:outline-none focus:ring-2 focus:ring-neutral-950 focus:ring-offset-2 dark:border-neutral-800 dark:focus:ring-neutral-300",
+  "inline-flex items-center rounded-md border px-1.5 py-0.5 text-xs font-medium transition-colors focus:outline-none focus:ring-2 focus:ring-neutral-300 dark:focus:ring-neutral-300",
   {
     variants: {
       variant: {
-        default:
-          "border-transparent bg-neutral-900 text-neutral-50 shadow hover:bg-neutral-900/80 dark:bg-neutral-50 dark:text-neutral-900 dark:hover:bg-neutral-50/80",
-        secondary:
-          "border-transparent bg-neutral-100 text-neutral-900 hover:bg-neutral-100/80 dark:bg-neutral-800 dark:text-neutral-50 dark:hover:bg-neutral-800/80",
-        destructive:
-          "border-transparent bg-red-500 text-neutral-50 shadow hover:bg-red-500/80 dark:bg-red-900 dark:text-neutral-50 dark:hover:bg-red-900/80",
-        warning:
-          "border-transparent bg-yellow-500 text-neutral-50 shadow hover:bg-yellow-500/80 dark:bg-yellow-800 dark:text-neutral-50 dark:hover:bg-yellow-800/80",
-        outline: "text-neutral-950 dark:text-neutral-50",
-        green:
-          "border-transparent bg-green-500 text-green-200 shadow hover:bg-green-500/80 dark:bg-green-900 dark:text-green-300 dark:hover:bg-green-900/80",
-        red: "border-transparent bg-red-500 text-red-200 shadow hover:bg-red-500/80 dark:bg-red-900 dark:text-red-300 dark:hover:bg-red-900/80",
-        minimal: "border-transparent bg-neutral-700 text-neutral-200",
+        default: "border-neutral-100 bg-neutral-100 text-neutral-900 hover:bg-neutral-150 dark:border-neutral-800 dark:bg-neutral-800 dark:text-neutral-100 dark:hover:bg-neutral-700",
+        secondary: "border-neutral-100 bg-neutral-50 text-neutral-600 hover:bg-neutral-100 dark:border-neutral-800 dark:bg-neutral-900 dark:text-neutral-300 dark:hover:bg-neutral-800",
+        destructive: "border-transparent bg-red-500/20 text-red-600 hover:bg-red-500/30 dark:text-red-400",
+        warning: "border-transparent bg-yellow-500/20 text-yellow-600 hover:bg-yellow-500/30 dark:text-yellow-400",
+        success: "border-transparent bg-emerald-500/20 text-emerald-600 hover:bg-emerald-500/30 dark:text-emerald-400",
+        info: "border-transparent bg-blue-500/20 text-blue-600 hover:bg-blue-500/30 dark:text-blue-400",
+        outline: "border-neutral-100 bg-transparent text-neutral-700 hover:bg-neutral-50 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-800",
+        ghost: "border-transparent bg-transparent text-neutral-700 hover:bg-neutral-50 dark:text-neutral-300 dark:hover:bg-neutral-800",
       },
     },
     defaultVariants: {
@@ -29,14 +24,10 @@ const badgeVariants = cva(
   }
 );
 
-export interface BadgeProps
-  extends React.HTMLAttributes<HTMLDivElement>,
-    VariantProps<typeof badgeVariants> {}
+export interface BadgeProps extends React.HTMLAttributes<HTMLDivElement>, VariantProps<typeof badgeVariants> {}
 
 function Badge({ className, variant, ...props }: BadgeProps) {
-  return (
-    <div className={cn(badgeVariants({ variant }), className)} {...props} />
-  );
+  return <div className={cn(badgeVariants({ variant }), className)} {...props} />;
 }
 
 export { Badge, badgeVariants };

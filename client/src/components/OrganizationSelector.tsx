@@ -1,20 +1,14 @@
 import { Building2 } from "lucide-react";
+import { useExtracted } from "next-intl";
 import { useState, useEffect } from "react";
 import { authClient } from "../lib/auth";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "./ui/select";
-import { useUserOrganizations } from "../api/admin/organizations";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "./ui/select";
+import { useUserOrganizations } from "../api/admin/hooks/useOrganizations";
 
 export function OrganizationSelector() {
-  const { data: organizations, isLoading: isLoadingOrganizations } =
-    useUserOrganizations();
-  const { data: activeOrganization, isPending } =
-    authClient.useActiveOrganization();
+  const t = useExtracted();
+  const { data: organizations, isLoading: isLoadingOrganizations } = useUserOrganizations();
+  const { data: activeOrganization, isPending } = authClient.useActiveOrganization();
 
   // Local state to handle the delay when switching organizations
   const [selectedOrgId, setSelectedOrgId] = useState<string | null>(null);
@@ -39,7 +33,7 @@ export function OrganizationSelector() {
     return (
       <Select disabled>
         <SelectTrigger className="w-full">
-          <SelectValue placeholder={"No organizations"} />
+          <SelectValue placeholder={t("No organizations")} />
         </SelectTrigger>
       </Select>
     );
@@ -50,11 +44,11 @@ export function OrganizationSelector() {
     return (
       <Select disabled>
         <SelectTrigger className="w-full">
-          <SelectValue placeholder={"Loading..."} />
+          <SelectValue placeholder={t("Loading...")} />
         </SelectTrigger>
         <SelectContent>
           <SelectItem value="placeholder" disabled>
-            {"Loading organizations..."}
+            {t("Loading organizations...")}
           </SelectItem>
         </SelectContent>
       </Select>
@@ -68,20 +62,20 @@ export function OrganizationSelector() {
       disabled={!organizations || organizations.length === 0}
     >
       <SelectTrigger className="w-full">
-        <SelectValue placeholder="Select an organization" />
+        <SelectValue placeholder={t("Select an organization")} />
       </SelectTrigger>
       <SelectContent>
-        {organizations?.map((org) => (
+        {organizations?.map(org => (
           <SelectItem key={org.id} value={org.id}>
-            <div className="flex items-center">
-              <Building2 className="h-4 w-4 mr-2 text-muted-foreground" />
-              {org.name}
+            <div className="flex items-center min-w-0">
+              <Building2 className="h-4 w-4 mr-2 text-muted-foreground shrink-0" />
+              <span className="truncate">{org.name}</span>
             </div>
           </SelectItem>
         ))}
         {(!organizations || organizations.length === 0) && (
           <SelectItem value="no-org" disabled>
-            No organizations available
+            {t("No organizations available")}
           </SelectItem>
         )}
       </SelectContent>

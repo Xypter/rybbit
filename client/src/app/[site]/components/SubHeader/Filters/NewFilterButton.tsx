@@ -1,22 +1,16 @@
 "use client";
 import { Filter, FilterParameter } from "@rybbit/shared";
 import { ListFilterPlus, Plus } from "lucide-react";
+import { useExtracted } from "next-intl";
 import { useState } from "react";
 import { Button } from "../../../../../components/ui/button";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuTrigger,
-} from "../../../../../components/ui/dropdown-menu";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuTrigger } from "../../../../../components/ui/dropdown-menu";
 import { useStore } from "../../../../../lib/store";
 import { sleep } from "../../../../../lib/utils";
-import { FilterComponent } from "../../shared/Filters/FilterComponent";
+import { FilterComponent } from "./FilterComponent";
 
-export function NewFilterButton({
-  availableFilters,
-}: {
-  availableFilters?: FilterParameter[];
-}) {
+export function NewFilterButton({ availableFilters }: { availableFilters?: FilterParameter[] }) {
+  const t = useExtracted();
   const { filters, setFilters } = useStore();
 
   const [localFilters, setLocalFilters] = useState<Filter[]>(filters);
@@ -53,7 +47,7 @@ export function NewFilterButton({
 
   return (
     <DropdownMenu
-      onOpenChange={(isOpen) => {
+      onOpenChange={isOpen => {
         setLocalFilters(filters);
         if (!isOpen) {
           onClose();
@@ -61,24 +55,19 @@ export function NewFilterButton({
       }}
       open={open}
     >
-      <DropdownMenuTrigger asChild>
-        <Button
-          className="text-xs sm:text-sm h-8 sm:h-9 px-3 p-2 sm:p-3"
-          onClick={() => {
-            if (localFilters.length === 0) {
-              addLocalFilter();
-            }
-            setOpen(true);
-          }}
-        >
-          <ListFilterPlus className="w-4 h-4" />
-          Filter
-        </Button>
-      </DropdownMenuTrigger>
-      <DropdownMenuContent
-        align="start"
-        className="flex flex-col p-0 max-w-[95vw]"
+      <DropdownMenuTrigger
+        size={"sm"}
+        onClick={() => {
+          if (localFilters.length === 0) {
+            addLocalFilter();
+          }
+          setOpen(true);
+        }}
       >
+        <ListFilterPlus className="w-4 h-4" />
+        {t("Filter")}
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="start" className="flex flex-col p-0 max-w-[95vw]">
         <div className="flex flex-col gap-2 p-3">
           {localFilters.map((filter, index) => (
             <FilterComponent
@@ -90,15 +79,10 @@ export function NewFilterButton({
             />
           ))}
         </div>
-        <div className="flex justify-between border-t border-neutral-750 p-3">
-          <Button
-            variant={"ghost"}
-            onClick={() => addLocalFilter()}
-            size={"sm"}
-            className="gap-1"
-          >
+        <div className="flex justify-between border-t border-neutral-200 dark:border-neutral-750 p-3">
+          <Button variant={"ghost"} onClick={() => addLocalFilter()} size={"sm"} className="gap-1">
             <Plus className="w-3 h-3" />
-            Add Filter
+            {t("Add Filter")}
           </Button>
           <Button
             variant={"outline"}
@@ -108,7 +92,7 @@ export function NewFilterButton({
               setOpen(false);
             }}
           >
-            Save Filters
+            {t("Save Filters")}
           </Button>
         </div>
       </DropdownMenuContent>

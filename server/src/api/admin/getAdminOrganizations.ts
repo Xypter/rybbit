@@ -4,31 +4,12 @@ import { DateTime } from "luxon";
 import { clickhouse } from "../../db/clickhouse/clickhouse.js";
 import { db } from "../../db/postgres/postgres.js";
 import { member, sites, user } from "../../db/postgres/schema.js";
-import { getIsUserAdmin } from "../../lib/auth-utils.js";
-import {
-  DEFAULT_EVENT_LIMIT,
-  getStripePrices,
-  StripePlan,
-} from "../../lib/const.js";
-import { stripe } from "../../lib/stripe.js";
+import { logger } from "../../lib/logger/logger.js";
+import { getOrganizationSubscriptions } from "../../services/admin/subscriptionService.js";
 
-// Define event count result type
 interface EventCountResult {
   site_id: string;
   total_events: number;
-}
-
-// Function to find plan details by price ID
-function findPlanDetails(priceId: string): StripePlan | undefined {
-  return getStripePrices().find(
-    (plan: StripePlan) =>
-      plan.priceId === priceId ||
-      (plan.annualDiscountPriceId && plan.annualDiscountPriceId === priceId)
-  );
-}
-
-function getStartOfNextMonth() {
-  return DateTime.now().startOf("month").plus({ months: 1 }).toJSDate();
 }
 
 export interface AdminOrganizationData {
@@ -52,6 +33,7 @@ export interface AdminOrganizationData {
     domain: string;
     createdAt: string;
     eventsLast24Hours: number;
+    eventsLast30Days: number;
   }[];
   members: {
     userId: string;
@@ -62,22 +44,11 @@ export interface AdminOrganizationData {
   }[];
 }
 
-export async function getAdminOrganizations(
-  request: FastifyRequest,
-  reply: FastifyReply
-) {
-  const isAdmin = await getIsUserAdmin(request);
-
-  if (!isAdmin) {
-    return reply.status(401).send({ error: "Unauthorized" });
-  }
-
+export async function getAdminOrganizations(request: FastifyRequest, reply: FastifyReply) {
   try {
     // Get all organizations with their basic data
     const organizationsData = await db.query.organization.findMany({
-      orderBy: (organization, { desc }) => [
-        desc(organization.monthlyEventCount),
-      ],
+      orderBy: (organization, { desc }) => [desc(organization.createdAt)],
     });
 
     // Get all members for all organizations
@@ -109,7 +80,7 @@ export async function getAdminOrganizations(
     }
 
     // Get all sites for all organizations
-    const allOrgIds = organizationsData.map((org) => org.id);
+    const allOrgIds = organizationsData.map(org => org.id);
     const orgSites = await db
       .select({
         siteId: sites.siteId,
@@ -119,46 +90,66 @@ export async function getAdminOrganizations(
         organizationId: sites.organizationId,
       })
       .from(sites)
-      .where(
-        allOrgIds.length > 0
-          ? inArray(sites.organizationId, allOrgIds)
-          : undefined
-      );
+      .where(allOrgIds.length > 0 ? inArray(sites.organizationId, allOrgIds) : undefined);
 
-    // Get event counts for the past 24 hours from ClickHouse
+    // Get event counts for the past 24 hours and 30 days from ClickHouse
     const now = DateTime.now();
     const yesterday = now.minus({ hours: 24 });
+    const thirtyDaysAgo = now.minus({ days: 30 });
 
-    let siteEventMap = new Map<number, number>();
+    let siteEventMap24h = new Map<number, number>();
+    let siteEventMap30d = new Map<number, number>();
 
     try {
-      const eventCountsResult = await clickhouse.query({
+      // Query for last 24 hours
+      const eventCounts24hResult = await clickhouse.query({
         query: `
-          SELECT 
+          SELECT
             site_id,
             sum(event_count) as total_events
-          FROM 
+          FROM
             hourly_events_by_site_mv_target
-          WHERE 
+          WHERE
             event_hour >= toDateTime('${yesterday.toFormat("yyyy-MM-dd HH:mm:ss")}') AND
             event_hour <= toDateTime('${now.toFormat("yyyy-MM-dd HH:mm:ss")}')
-          GROUP BY 
+          GROUP BY
             site_id
         `,
         format: "JSONEachRow",
       });
 
-      const rawEventCounts = await eventCountsResult.json();
-      const eventCounts = rawEventCounts as EventCountResult[];
+      const rawEventCounts24h = await eventCounts24hResult.json();
+      const eventCounts24h = rawEventCounts24h as EventCountResult[];
 
-      for (const event of eventCounts) {
-        siteEventMap.set(Number(event.site_id), event.total_events);
+      for (const event of eventCounts24h) {
+        siteEventMap24h.set(Number(event.site_id), event.total_events);
+      }
+
+      // Query for last 30 days
+      const eventCounts30dResult = await clickhouse.query({
+        query: `
+          SELECT
+            site_id,
+            sum(event_count) as total_events
+          FROM
+            hourly_events_by_site_mv_target
+          WHERE
+            event_hour >= toDateTime('${thirtyDaysAgo.toFormat("yyyy-MM-dd HH:mm:ss")}') AND
+            event_hour <= toDateTime('${now.toFormat("yyyy-MM-dd HH:mm:ss")}')
+          GROUP BY
+            site_id
+        `,
+        format: "JSONEachRow",
+      });
+
+      const rawEventCounts30d = await eventCounts30dResult.json();
+      const eventCounts30d = rawEventCounts30d as EventCountResult[];
+
+      for (const event of eventCounts30d) {
+        siteEventMap30d.set(Number(event.site_id), event.total_events);
       }
     } catch (clickhouseError) {
-      console.warn(
-        "ClickHouse query failed, continuing without event counts:",
-        clickhouseError
-      );
+      logger.warn(clickhouseError as Error, "ClickHouse query failed, continuing without event counts");
     }
 
     // Create map of organization IDs to their sites with event counts
@@ -173,106 +164,30 @@ export async function getAdminOrganizations(
           name: site.name,
           domain: site.domain,
           createdAt: site.createdAt,
-          eventsLast24Hours: siteEventMap.get(site.siteId) || 0,
+          eventsLast24Hours: siteEventMap24h.get(site.siteId) || 0,
+          eventsLast30Days: siteEventMap30d.get(site.siteId) || 0,
         });
       }
     }
 
-    // Get subscription data for organizations with Stripe customer IDs
-    const orgsWithStripe = organizationsData.filter(
-      (org) => org.stripeCustomerId
-    );
-    const stripeCustomerIds = new Set(
-      orgsWithStripe.map((org) => org.stripeCustomerId!)
-    );
-
-    // Use bulk fetch approach: get all active subscriptions and filter by customer IDs
-    const subscriptionMap = new Map<string, any>();
-
-    if (stripe && stripeCustomerIds.size > 0) {
-      try {
-        // Fetch all active subscriptions in batches using pagination
-        let hasMore = true;
-        let startingAfter: string | undefined;
-
-        while (hasMore) {
-          const subscriptions = await stripe.subscriptions.list({
-            status: "active",
-            limit: 100, // Maximum allowed by Stripe
-            expand: ["data.plan.product"],
-            ...(startingAfter && { starting_after: startingAfter }),
-          });
-
-          // Process subscriptions for our customers
-          for (const subscription of subscriptions.data) {
-            const customerId = subscription.customer as string;
-
-            if (stripeCustomerIds.has(customerId)) {
-              const subscriptionItem = subscription.items.data[0];
-              const priceId = subscriptionItem.price.id;
-
-              if (priceId) {
-                const planDetails = findPlanDetails(priceId);
-
-                subscriptionMap.set(customerId, {
-                  id: subscription.id,
-                  planName: planDetails?.name || "Unknown Plan",
-                  status: subscription.status,
-                  currentPeriodStart: new Date(
-                    subscriptionItem.current_period_start * 1000
-                  ),
-                  currentPeriodEnd: new Date(
-                    subscriptionItem.current_period_end * 1000
-                  ),
-                  cancelAtPeriodEnd: subscription.cancel_at_period_end,
-                  eventLimit: planDetails?.limits.events || 0,
-                  interval:
-                    subscriptionItem.price.recurring?.interval ?? "unknown",
-                });
-              }
-            }
-          }
-
-          hasMore = subscriptions.has_more;
-          if (hasMore && subscriptions.data.length > 0) {
-            startingAfter =
-              subscriptions.data[subscriptions.data.length - 1].id;
-          }
-
-          // Rate limiting: wait 50ms between requests (20 req/s)
-          if (hasMore) {
-            await new Promise((resolve) => setTimeout(resolve, 50));
-          }
-        }
-      } catch (error) {
-        console.error("Error fetching subscriptions from Stripe:", error);
-      }
-    }
+    // Get subscription data for organizations
+    const orgSubscriptionMap = await getOrganizationSubscriptions(organizationsData, true);
 
     // Build the final response with subscription data
-    const enrichedOrganizations: AdminOrganizationData[] =
-      organizationsData.map((org) => {
-        const subscriptionData = org.stripeCustomerId
-          ? subscriptionMap.get(org.stripeCustomerId)
-          : null;
+    const enrichedOrganizations: AdminOrganizationData[] = organizationsData.map(org => {
+      const subscriptionData = orgSubscriptionMap.get(org.id)!; // Non-null assertion since service always returns data
 
-        return {
-          id: org.id,
-          name: org.name,
-          createdAt: org.createdAt,
-          monthlyEventCount: org.monthlyEventCount || 0,
-          overMonthlyLimit: org.overMonthlyLimit || false,
-          subscription: subscriptionData || {
-            id: null,
-            planName: "free",
-            status: "free",
-            eventLimit: DEFAULT_EVENT_LIMIT,
-            currentPeriodEnd: getStartOfNextMonth(),
-          },
-          sites: orgSitesMap.get(org.id) || [],
-          members: orgMembersMap.get(org.id) || [],
-        };
-      });
+      return {
+        id: org.id,
+        name: org.name,
+        createdAt: org.createdAt,
+        monthlyEventCount: org.monthlyEventCount || 0,
+        overMonthlyLimit: org.overMonthlyLimit || false,
+        subscription: subscriptionData,
+        sites: orgSitesMap.get(org.id) || [],
+        members: orgMembersMap.get(org.id) || [],
+      };
+    });
 
     return reply.status(200).send(enrichedOrganizations);
   } catch (error) {

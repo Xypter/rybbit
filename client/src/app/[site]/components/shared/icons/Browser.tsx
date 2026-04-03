@@ -1,4 +1,3 @@
-import { m } from "framer-motion";
 import { Compass } from "lucide-react";
 import Image from "next/image";
 
@@ -65,19 +64,13 @@ const BROWSER_TO_LOGO: Record<string, string> = {
   Waterfox: "Waterfox.svg",
 };
 
-export function Browser({ browser }: { browser: string }) {
+export function Browser({ browser, size = 16 }: { browser: string; size?: number }) {
   return (
     <>
       {BROWSER_TO_LOGO[browser] ? (
-        <Image
-          src={`/browsers/${BROWSER_TO_LOGO[browser]}`}
-          alt={browser || "Other"}
-          className="w-4 h-4"
-          width={16}
-          height={16}
-        />
+        <Image src={`/browsers/${BROWSER_TO_LOGO[browser]}`} alt={browser || "Other"} width={size} height={size} />
       ) : (
-        <Compass width={16} />
+        <Compass width={size} height={size} />
       )}
     </>
   );

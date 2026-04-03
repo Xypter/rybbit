@@ -1,94 +1,66 @@
 "use client";
 
 import { authClient } from "@/lib/auth";
-import { getStripePrices } from "@/lib/stripe";
+import { useExtracted } from "next-intl";
 import { useRouter } from "next/navigation";
-import { DateTime } from "luxon";
-import { TrendingUp } from "lucide-react";
+import { Suspense } from "react";
 import { StandardPage } from "../../components/StandardPage";
-import { useStripeSubscription } from "../../lib/subscription/useStripeSubscription";
-import { useGetOrgEventCount } from "../../api/analytics/useGetOrgEventCount";
 import { UsageChart } from "../../components/UsageChart";
+import { useStripeSubscription } from "../../lib/subscription/useStripeSubscription";
+import { PricingCards } from "./components/PricingCards";
 import { PricingHeader } from "./components/PricingHeader";
-import { PricingCard } from "./components/PricingCard";
-import { FAQSection } from "./components/FAQSection";
+import { useQueryState } from "nuqs";
 
-export default function Subscribe() {
+function SubscribeContent() {
   const { data: sessionData } = authClient.useSession();
   const { data: subscription } = useStripeSubscription();
   const { data: activeOrg } = authClient.useActiveOrganization();
   const router = useRouter();
 
+  const [siteId, setSiteId] = useQueryState("siteId");
+
   // Redirect if already subscribed
-  if (subscription?.status === "active") {
-    router.push("/organization/subscription");
-  }
+  // if (subscription?.status === "active" || subscription?.status === "trialing") {
+  //   router.push("/settings/subscription");
+  // }
 
   // Get the active organization ID
   const organizationId = activeOrg?.id;
 
-  // Get last 30 days of data
-  const endDate = DateTime.now().toISODate();
-  const startDate = DateTime.now().minus({ days: 30 }).toISODate();
-
-  // Fetch usage data for the chart and total calculation
-  const { data: eventCountData } = useGetOrgEventCount({
-    organizationId: organizationId || "",
-    startDate,
-    endDate,
-    enabled: !!organizationId,
-  });
-
-  // Calculate total events over the past 30 days
-  const totalEvents =
-    eventCountData?.data?.reduce((sum, day) => sum + day.event_count, 0) || 0;
+  if (siteId) {
+    return (
+      <StandardPage>
+        <div className="container mx-auto py-12 px-4">
+          <PricingHeader />
+          {/* Pricing Card */}
+          <PricingCards isLoggedIn={!!sessionData?.user} />
+        </div>
+      </StandardPage>
+    );
+  }
 
   return (
     <StandardPage>
       <div className="container mx-auto py-12 px-4">
         <PricingHeader />
-
         {/* Pricing Card */}
-        <PricingCard
-          stripePrices={getStripePrices()}
-          isLoggedIn={!!sessionData?.user}
-        />
-
+        <PricingCards isLoggedIn={!!sessionData?.user} />
         {/* Usage Stats and Chart */}
         {organizationId && (
-          <div className="max-w-lg mx-auto mt-6">
-            <div className="bg-blue-900/20 rounded-xl border border-blue-800 p-6">
-              <div className="flex items-center justify-between mb-4">
-                <div className="flex items-center gap-2">
-                  <TrendingUp className="h-5 w-5 text-blue-400" />
-                  <h3 className="font-semibold text-lg">
-                    Your Usage (Last 30 Days)
-                  </h3>
-                </div>
-                <div className="text-right">
-                  <p className="text-2xl font-bold text-blue-300">
-                    {totalEvents.toLocaleString()}
-                  </p>
-                  <p className="text-xs text-neutral-400">total events</p>
-                </div>
-              </div>
-
-              <div className="p-1">
-                <UsageChart
-                  organizationId={organizationId}
-                  startDate={startDate}
-                  endDate={endDate}
-                />
-              </div>
-            </div>
+          <div className="max-w-4xl mx-auto mt-6 bg-white dark:bg-neutral-900/80 rounded-xl border border-neutral-100 dark:border-neutral-850 p-6">
+            <UsageChart organizationId={organizationId} />
           </div>
         )}
-
-        {/* FAQ Section */}
-        <div className="max-w-lg mx-auto">
-          <FAQSection />
-        </div>
       </div>
     </StandardPage>
+  );
+}
+
+export default function Subscribe() {
+  const t = useExtracted();
+  return (
+    <Suspense fallback={<div className="flex items-center justify-center min-h-screen">{t("Loading...")}</div>}>
+      <SubscribeContent />
+    </Suspense>
   );
 }
